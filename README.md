@@ -1,5 +1,13 @@
 # ESP32_alarm
 
+| | |
+|---|---|
+| **Author** | Gordon ([Gordy404](https://github.com/Gordy404)) |
+| **Version** | 1.0.0 |
+| **Date** | 2026-11-13 00:57 GMT (UK) |
+
+The version is also in `FW_VERSION` / `FW_DATE` at the top of the sketch and is printed on the serial monitor at boot.
+
 Burglar alarm firmware for the ESP32 DevKit V1 (Arduino IDE), with a 3x4 membrane keypad, a reed switch, a PIR, a relay-driven external sounder, and a piezo for local feedback.
 
 ## Build
@@ -76,3 +84,9 @@ GPIO23 --[1k]--+-- Base           Relay coil (+) -- 5V (VIN)
 | `REARM_AFTER_ALARM` | true | false goes to DISARMED after the alarm |
 | `PIEZO_DURING_ALARM` | true | Piezo warbles with the siren |
 | `PIR_WARMUP_MS` | 30 s | PIR ignored after power-up |
+
+## Change log
+
+| Version | Date (UK) | Changes |
+|---|---|---|
+| 1.0.0 | 2026-11-13 00:57 GMT | First release: state machine, keypad code entry, exit/entry delays, 10 min relay alarm |

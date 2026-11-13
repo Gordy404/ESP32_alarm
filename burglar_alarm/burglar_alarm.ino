@@ -2,6 +2,15 @@
   ==========================================================================
   ESP32 DevKit V1 Burglar Alarm
   ==========================================================================
+  Author  : Gordon (GitHub: Gordy404)
+  Repo    : https://github.com/Gordy404/ESP32_alarm
+  Version : 1.0.0
+  Date    : 2026-11-13 00:57 GMT (UK)
+
+  Change log
+    1.0.0  2026-11-13 00:57 GMT  First release: state machine, keypad code
+                                 entry, exit/entry delays, 10 min relay alarm.
+  ==========================================================================
   Board  : "DOIT ESP32 DEVKIT V1" (or "ESP32 Dev Module") in Arduino IDE
   Library: "Keypad" by Mark Stanley / Alexander Brevig (Library Manager)
   Core   : esp32 by Espressif, 2.0.x or 3.x (uses tone()/noTone())
@@ -90,6 +99,13 @@
 #include <Arduino.h>
 #include <Keypad.h>
 #include <string.h>
+
+// ==========================================================================
+// FIRMWARE INFO -- bump FW_VERSION and FW_DATE on every change
+// ==========================================================================
+const char FW_AUTHOR[]  = "Gordon (GitHub: Gordy404)";
+const char FW_VERSION[] = "1.0.0";
+const char FW_DATE[]    = "2026-11-13 00:57 GMT";
 
 // ==========================================================================
 // USER SETTINGS -- change these
@@ -460,7 +476,9 @@ void setup() {
   clearKeys();
   stateEnteredAt = millis();
   Serial.println();
-  Serial.println("ESP32 burglar alarm ready - DISARMED");
+  Serial.printf("ESP32 burglar alarm v%s (%s)\n", FW_VERSION, FW_DATE);
+  Serial.printf("Author: %s\n", FW_AUTHOR);
+  Serial.println("Ready - DISARMED");
   Serial.printf("PIR warm-up: %lu s\n", (unsigned long)(PIR_WARMUP_MS / 1000));
   beepOK();
 }
