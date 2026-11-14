@@ -4,16 +4,25 @@
   ==========================================================================
   Author  : Gordon (GitHub: Gordy404)
   Repo    : https://github.com/Gordy404/ESP32_alarm
-  Version : 1.0.0
-  Date    : 2026-11-13 00:57 GMT (UK)
+  Version : 1.2.0
+  Date    : 2026-11-14 19:31 GMT (UK)
 
   Change log
     1.0.0  2026-11-13 00:57 GMT  First release: state machine, keypad code
                                  entry, exit/entry delays, 10 min relay alarm.
+    1.1.0  2026-11-14 18:33 GMT  WiFi + ArduinoOTA updates (password protected,
+                                 only accepted while DISARMED). Credentials in
+                                 secrets.h (not committed).
+    1.2.0  2026-11-14 19:31 GMT  Audible click on EVERY key press in every
+                                 state: click now overrides exit/entry beeps
+                                 and the alarm warble (short gap + distinct
+                                 tone), and confirm/error beeps wait for it.
   ==========================================================================
   Board  : "DOIT ESP32 DEVKIT V1" (or "ESP32 Dev Module") in Arduino IDE
   Library: "Keypad" by Mark Stanley / Alexander Brevig (Library Manager)
   Core   : esp32 by Espressif, 2.0.x or 3.x (uses tone()/noTone())
+  Partition scheme: any scheme WITH OTA (e.g. "Default 4MB with spiffs").
+                    "Huge APP (3MB No OTA)" will NOT work.
 
   --------------------------------------------------------------------------
   OPERATION
@@ -37,6 +46,22 @@
   When disarmed, '#' is the "enter/arm" key. When armed, the code is matched
   as soon as the last digit is typed (no '#' needed); '#' clears the buffer.
   The key buffer also clears after 10 s with no key presses.
+
+  --------------------------------------------------------------------------
+  OTA (over-the-air) UPDATES
+  --------------------------------------------------------------------------
+  1. Copy secrets.example.h to secrets.h in this folder and fill in your
+     WiFi SSID/password and an OTA password. secrets.h is git-ignored.
+  2. Flash once over USB. The serial monitor shows the IP address.
+  3. Afterwards, Arduino IDE > Tools > Port lists "esp32-alarm at <IP>".
+     Pick it, upload, and enter the OTA password when asked.
+  OTA is only serviced while DISARMED (OTA_ONLY_WHEN_DISARMED). An upload
+  attempt while armed or in alarm just times out on the PC side; the
+  alarm keeps running. During an upload the main loop is paused, so the
+  relay and piezo are forced OFF; after a successful update the board
+  reboots into DISARMED.
+  The alarm never waits for WiFi: no network = alarm works, just no OTA.
+  Without secrets.h the sketch still compiles, with WiFi/OTA disabled.
 
   --------------------------------------------------------------------------
   PIN MAP (all chosen to avoid strapping pins 0/2/5/12/15 for inputs,
@@ -99,13 +124,24 @@
 #include <Arduino.h>
 #include <Keypad.h>
 #include <string.h>
+#include <WiFi.h>
+#include <ArduinoOTA.h>
+
+// WiFi / OTA credentials live in secrets.h (git-ignored). Template: secrets.example.h
+#if __has_include("secrets.h")
+  #include "secrets.h"
+  #define HAVE_SECRETS 1
+#else
+  #warning "secrets.h not found - WiFi and OTA disabled. Copy secrets.example.h to secrets.h."
+  #define HAVE_SECRETS 0
+#endif
 
 // ==========================================================================
 // FIRMWARE INFO -- bump FW_VERSION and FW_DATE on every change
 // ==========================================================================
 const char FW_AUTHOR[]  = "Gordon (GitHub: Gordy404)";
-const char FW_VERSION[] = "1.0.0";
-const char FW_DATE[]    = "2026-11-13 00:57 GMT";
+const char FW_VERSION[] = "1.2.0";
+const char FW_DATE[]    = "2026-11-14 19:31 GMT";
 
 // ==========================================================================
 // USER SETTINGS -- change these
@@ -128,8 +164,17 @@ const bool PIEZO_DURING_ALARM      = true;   // piezo warbles alongside the rela
 const bool     PIEZO_IS_PASSIVE = true;      // false for an active (self-oscillating) buzzer
 const uint16_t PIEZO_FREQ_HZ    = 2700;      // passive piezos are loudest near resonance
 const uint16_t PIEZO_FREQ_LOW   = 1800;      // second tone for the alarm warble / error beep
+const uint16_t KEY_CLICK_FREQ_HZ = 3500;     // key click tone, distinct from the other sounds
+const uint16_t KEY_CLICK_GAP_MS  = 15;       // silence before the click so it stands out over
+                                             // a beep/warble (and is audible on an active buzzer)
+const uint16_t KEY_CLICK_MS      = 50;       // click tone length
 
 const uint8_t RELAY_ON_LEVEL = HIGH;         // spec: relay HIGH = alarm sounder on
+
+const char     OTA_HOSTNAME[]         = "esp32-alarm";  // shown in Arduino IDE > Port
+const bool     OTA_ONLY_WHEN_DISARMED = true;           // strongly recommended: false lets an upload
+                                                        // silence the siren while armed/in alarm
+const uint32_t WIFI_RETRY_MS          = 30UL * 1000;    // reconnect attempt interval
 
 // ==========================================================================
 // PINS
@@ -224,22 +269,32 @@ bool bufferEndsWithCode() {
 }
 
 // ==========================================================================
-// PIEZO (non-blocking): priority = feedback pattern > key click > state pattern
+// PIEZO (non-blocking): priority = key click > feedback pattern > state pattern
+// Every key press gives a click in every state; feedback beeps start after it.
 // ==========================================================================
 struct Feedback {
   uint8_t  remaining = 0;   // beeps left
   uint16_t onMs = 0, offMs = 0, freq = 0;
+  uint32_t startAt = 0;    // pattern waits until this time (after a key click)
   uint32_t stepAt = 0;
   bool     on = false;
 } fb;
 
-uint32_t clickUntil = 0;
+uint32_t clickStart = 0;
+bool     clickActive = false;
 bool     piezoIsOn = false;
 uint16_t piezoFreq = 0;
 
 void startFeedback(uint8_t count, uint16_t onMs, uint16_t offMs, uint16_t freq) {
   fb.remaining = count; fb.onMs = onMs; fb.offMs = offMs; fb.freq = freq;
-  fb.stepAt = millis(); fb.on = true;
+  uint32_t start = millis();
+  if (clickActive) start = clickStart + KEY_CLICK_GAP_MS + KEY_CLICK_MS + 30;   // let the click finish
+  fb.startAt = start; fb.stepAt = start; fb.on = true;
+}
+
+void startClick(uint32_t now) {
+  clickStart = now;
+  clickActive = true;
 }
 void beepOK()    { startFeedback(2, 80, 80, PIEZO_FREQ_HZ); }
 void beepError() { startFeedback(1, 600, 0, PIEZO_FREQ_LOW); }
@@ -248,6 +303,7 @@ void beepDisarm(){ startFeedback(3, 60, 60, PIEZO_FREQ_HZ); }
 // Returns true and sets freq if the feedback pattern wants sound now.
 bool feedbackSound(uint32_t now, uint16_t& freq) {
   if (fb.remaining == 0) return false;
+  if ((int32_t)(now - fb.startAt) < 0) return false;   // still waiting for the click
   uint32_t dur = fb.on ? fb.onMs : fb.offMs;
   if (now - fb.stepAt >= dur) {
     fb.stepAt = now;
@@ -283,11 +339,18 @@ void updatePiezo(uint32_t now) {
   bool on = false;
   uint32_t elapsed = now - stateEnteredAt;
 
-  if (feedbackSound(now, freq)) {
+  if (clickActive && (now - clickStart) >= (uint32_t)(KEY_CLICK_GAP_MS + KEY_CLICK_MS)) {
+    clickActive = false;
+  }
+  uint16_t fbFreq = PIEZO_FREQ_HZ;
+  bool fbOn = feedbackSound(now, fbFreq);   // always called so its timing keeps running
+
+  if (clickActive) {
+    on = (now - clickStart) >= KEY_CLICK_GAP_MS;   // brief gap, then the click tone
+    freq = KEY_CLICK_FREQ_HZ;
+  } else if (fbOn) {
     on = true;
-  } else if ((int32_t)(clickUntil - now) > 0) {
-    on = true;
-    freq = PIEZO_FREQ_HZ;
+    freq = fbFreq;
   } else {
     switch (state) {
       case EXIT_DELAY:
@@ -347,7 +410,7 @@ bool pirMotion(uint32_t now){ return pirReady(now) && pir.high(); }
 // KEY HANDLING
 // ==========================================================================
 void handleKey(char k, uint32_t now) {
-  clickUntil = now + 40;     // key click
+  startClick(now);          // audible click for every key, in every state
   lastKeyAt = now;
 
   if (state == DISARMED) {
@@ -455,6 +518,80 @@ void updateStateMachine(uint32_t now) {
 }
 
 // ==========================================================================
+// WIFI + OTA (never blocks the alarm; OTA serviced only when allowed)
+// ==========================================================================
+#if HAVE_SECRETS
+bool     otaReady         = false;
+bool     wifiWasConnected = false;
+uint32_t lastWifiAttempt  = 0;
+
+void startOta() {
+  if (strlen(OTA_PASSWORD) == 0) {
+    Serial.println("OTA: OTA_PASSWORD is empty - OTA disabled (refusing an open OTA port)");
+    return;
+  }
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+  ArduinoOTA.onStart([]() {
+    // The upload blocks loop(): put every output into a safe, quiet state.
+    setRelay(false);
+    setPiezo(false, 0);
+    digitalWrite(PIN_LED, HIGH);
+    Serial.println("OTA: update started - alarm suspended");
+  });
+  ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+    static int lastTenth = -1;
+    int pct = total ? (int)((uint64_t)done * 100 / total) : 0;
+    if (pct / 10 != lastTenth) {
+      lastTenth = pct / 10;
+      Serial.printf("OTA: %d%%\n", pct);
+    }
+  });
+  ArduinoOTA.onEnd([]() { Serial.println("OTA: complete - rebooting"); });
+  ArduinoOTA.onError([](ota_error_t err) {
+    Serial.printf("OTA: error %u - update aborted, firmware unchanged\n", (unsigned)err);
+  });
+  ArduinoOTA.begin();
+  otaReady = true;
+  Serial.printf("OTA: ready as \"%s\"\n", OTA_HOSTNAME);
+}
+
+void setupNetwork() {
+  WiFi.setHostname(OTA_HOSTNAME);   // must precede WiFi.mode() on core 2.0.x
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  lastWifiAttempt = millis();
+  Serial.printf("WiFi: connecting to \"%s\" (non-blocking)\n", WIFI_SSID);
+}
+
+void updateNetwork(uint32_t now) {
+  bool connected = WiFi.status() == WL_CONNECTED;
+
+  if (connected && !wifiWasConnected) {
+    Serial.printf("WiFi: connected, IP %s\n", WiFi.localIP().toString().c_str());
+    if (!otaReady) startOta();
+  } else if (!connected && wifiWasConnected) {
+    Serial.println("WiFi: connection lost - alarm unaffected");
+  }
+  wifiWasConnected = connected;
+
+  if (!connected && (now - lastWifiAttempt) >= WIFI_RETRY_MS) {
+    lastWifiAttempt = now;
+    WiFi.reconnect();
+  }
+
+  // Not calling handle() while armed means an upload attempt simply times out.
+  if (connected && otaReady && (!OTA_ONLY_WHEN_DISARMED || state == DISARMED)) {
+    ArduinoOTA.handle();
+  }
+}
+#else
+void setupNetwork() { Serial.println("WiFi/OTA: disabled (no secrets.h)"); }
+void updateNetwork(uint32_t) {}
+#endif
+
+// ==========================================================================
 // SETUP / LOOP
 // ==========================================================================
 void setup() {
@@ -480,6 +617,7 @@ void setup() {
   Serial.printf("Author: %s\n", FW_AUTHOR);
   Serial.println("Ready - DISARMED");
   Serial.printf("PIR warm-up: %lu s\n", (unsigned long)(PIR_WARMUP_MS / 1000));
+  setupNetwork();
   beepOK();
 }
 
@@ -495,6 +633,7 @@ void loop() {
   if (keyLen && (now - lastKeyAt) >= KEY_BUFFER_TIMEOUT) clearKeys();
 
   updateStateMachine(now);
+  updateNetwork(now);
   // Fresh timestamp: a transition above may have set stateEnteredAt after 'now'.
   uint32_t outNow = millis();
   updatePiezo(outNow);
