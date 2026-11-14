@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Author** | Gordon ([Gordy404](https://github.com/Gordy404)) |
-| **Version** | 1.0.0 |
-| **Date** | 2026-11-13 00:57 GMT (UK) |
+| **Version** | 1.1.0 |
+| **Date** | 2026-11-14 18:33 GMT (UK) |
 
 The version is also in `FW_VERSION` / `FW_DATE` at the top of the sketch and is printed on the serial monitor at boot.
 
@@ -14,8 +14,9 @@ Burglar alarm firmware for the ESP32 DevKit V1 (Arduino IDE), with a 3x4 membran
 
 1. In Arduino IDE, install the **esp32 by Espressif** core (2.0.x or 3.x).
 2. Install the **Keypad** library by Mark Stanley / Alexander Brevig from the Library Manager.
-3. Open `burglar_alarm/burglar_alarm.ino`, select **DOIT ESP32 DEVKIT V1** (or **ESP32 Dev Module**) and upload.
-4. Serial monitor at 115200 baud logs every state change.
+3. Copy `burglar_alarm/secrets.example.h` to `burglar_alarm/secrets.h` and fill in your WiFi and OTA passwords (see [OTA updates](#ota-updates)). Without it the sketch still builds, with WiFi and OTA off.
+4. Open `burglar_alarm/burglar_alarm.ino`, select **DOIT ESP32 DEVKIT V1** (or **ESP32 Dev Module**), keep a partition scheme **with OTA** (the default "Default 4MB with spiffs" is fine, "Huge APP (No OTA)" is not), and upload over USB the first time.
+5. Serial monitor at 115200 baud logs every state change.
 
 ## Operation
 
@@ -28,6 +29,21 @@ Burglar alarm firmware for the ESP32 DevKit V1 (Arduino IDE), with a 3x4 membran
 | ALARM | Relay HIGH (siren on) for 10 min, piezo warbles. | Code → DISARMED. After 10 min → ARMED, with any still-active sensor bypassed until it restores |
 
 Because the code ends in `*`, `*` can't be a clear key. When disarmed, `#` is "enter". When armed, the code is matched as soon as it is typed, and `#` clears the buffer. Half-typed codes clear after 10 s.
+
+## OTA updates
+
+After the first USB upload the alarm joins your WiFi and can be updated over the network from Arduino IDE.
+
+1. `secrets.h` holds `WIFI_SSID`, `WIFI_PASSWORD` and `OTA_PASSWORD`. It is in `.gitignore`, so it never gets pushed. OTA stays off if `OTA_PASSWORD` is empty.
+2. The serial monitor prints the IP once WiFi connects.
+3. In Arduino IDE, **Tools > Port** lists `esp32-alarm at <IP>`. Pick it, upload, and enter the OTA password.
+
+Safety rules built in:
+
+- **Updates are accepted only while DISARMED** (`OTA_ONLY_WHEN_DISARMED = true`). While armed, in an entry delay or in alarm the board ignores OTA, so an upload just times out on the PC and the alarm carries on.
+- An upload pauses the main loop, so the relay and piezo are forced off for its duration. After a successful update the board reboots into DISARMED. A failed or interrupted upload leaves the old firmware running.
+- WiFi never blocks the alarm. If the network is down, the alarm works normally and retries WiFi every 30 s.
+- ArduinoOTA uses a password challenge but no encryption, so keep it to a trusted home network.
 
 ## Pin map
 
@@ -84,9 +100,13 @@ GPIO23 --[1k]--+-- Base           Relay coil (+) -- 5V (VIN)
 | `REARM_AFTER_ALARM` | true | false goes to DISARMED after the alarm |
 | `PIEZO_DURING_ALARM` | true | Piezo warbles with the siren |
 | `PIR_WARMUP_MS` | 30 s | PIR ignored after power-up |
+| `OTA_HOSTNAME` | `esp32-alarm` | Network name shown in Arduino IDE |
+| `OTA_ONLY_WHEN_DISARMED` | true | false allows updates while armed, which silences the siren during the upload |
+| `WIFI_RETRY_MS` | 30 s | WiFi reconnect interval |
 
 ## Change log
 
 | Version | Date (UK) | Changes |
 |---|---|---|
 | 1.0.0 | 2026-11-13 00:57 GMT | First release: state machine, keypad code entry, exit/entry delays, 10 min relay alarm |
+| 1.1.0 | 2026-11-14 18:33 GMT | WiFi and password-protected ArduinoOTA updates, only while DISARMED; credentials in git-ignored `secrets.h` |
