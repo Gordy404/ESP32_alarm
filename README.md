@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Author** | Gordon ([Gordy404](https://github.com/Gordy404)) |
-| **Version** | 1.1.0 |
-| **Date** | 2026-11-14 18:33 GMT (UK) |
+| **Version** | 1.2.0 |
+| **Date** | 2026-11-14 19:31 GMT (UK) |
 
 The version is also in `FW_VERSION` / `FW_DATE` at the top of the sketch and is printed on the serial monitor at boot.
 
@@ -29,6 +29,8 @@ Burglar alarm firmware for the ESP32 DevKit V1 (Arduino IDE), with a 3x4 membran
 | ALARM | Relay HIGH (siren on) for 10 min, piezo warbles. | Code → DISARMED. After 10 min → ARMED, with any still-active sensor bypassed until it restores |
 
 Because the code ends in `*`, `*` can't be a clear key. When disarmed, `#` is "enter". When armed, the code is matched as soon as it is typed, and `#` clears the buffer. Half-typed codes clear after 10 s.
+
+Every key press clicks the piezo in every state (`KEY_CLICK_FREQ_HZ`, 3.5 kHz for 50 ms after a 15 ms gap), so it stays audible over the exit and entry beeps and the alarm warble. Confirm and error beeps play after the click.
 
 ## OTA updates
 
@@ -100,6 +102,7 @@ GPIO23 --[1k]--+-- Base           Relay coil (+) -- 5V (VIN)
 | `REARM_AFTER_ALARM` | true | false goes to DISARMED after the alarm |
 | `PIEZO_DURING_ALARM` | true | Piezo warbles with the siren |
 | `PIR_WARMUP_MS` | 30 s | PIR ignored after power-up |
+| `KEY_CLICK_FREQ_HZ` / `KEY_CLICK_MS` / `KEY_CLICK_GAP_MS` | 3500 Hz / 50 ms / 15 ms | Key click tone, length and the silence before it |
 | `OTA_HOSTNAME` | `esp32-alarm` | Network name shown in Arduino IDE |
 | `OTA_ONLY_WHEN_DISARMED` | true | false allows updates while armed, which silences the siren during the upload |
 | `WIFI_RETRY_MS` | 30 s | WiFi reconnect interval |
@@ -110,3 +113,4 @@ GPIO23 --[1k]--+-- Base           Relay coil (+) -- 5V (VIN)
 |---|---|---|
 | 1.0.0 | 2026-11-13 00:57 GMT | First release: state machine, keypad code entry, exit/entry delays, 10 min relay alarm |
 | 1.1.0 | 2026-11-14 18:33 GMT | WiFi and password-protected ArduinoOTA updates, only while DISARMED; credentials in git-ignored `secrets.h` |
+| 1.2.0 | 2026-11-14 19:31 GMT | Audible click on every key press in every state, overriding exit/entry beeps and the alarm warble; confirm/error beeps wait for the click |

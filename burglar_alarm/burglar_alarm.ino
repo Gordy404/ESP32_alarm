@@ -4,8 +4,8 @@
   ==========================================================================
   Author  : Gordon (GitHub: Gordy404)
   Repo    : https://github.com/Gordy404/ESP32_alarm
-  Version : 1.1.0
-  Date    : 2026-11-14 18:33 GMT (UK)
+  Version : 1.2.0
+  Date    : 2026-11-14 19:31 GMT (UK)
 
   Change log
     1.0.0  2026-11-13 00:57 GMT  First release: state machine, keypad code
@@ -13,6 +13,10 @@
     1.1.0  2026-11-14 18:33 GMT  WiFi + ArduinoOTA updates (password protected,
                                  only accepted while DISARMED). Credentials in
                                  secrets.h (not committed).
+    1.2.0  2026-11-14 19:31 GMT  Audible click on EVERY key press in every
+                                 state: click now overrides exit/entry beeps
+                                 and the alarm warble (short gap + distinct
+                                 tone), and confirm/error beeps wait for it.
   ==========================================================================
   Board  : "DOIT ESP32 DEVKIT V1" (or "ESP32 Dev Module") in Arduino IDE
   Library: "Keypad" by Mark Stanley / Alexander Brevig (Library Manager)
@@ -136,8 +140,8 @@
 // FIRMWARE INFO -- bump FW_VERSION and FW_DATE on every change
 // ==========================================================================
 const char FW_AUTHOR[]  = "Gordon (GitHub: Gordy404)";
-const char FW_VERSION[] = "1.1.0";
-const char FW_DATE[]    = "2026-11-14 18:33 GMT";
+const char FW_VERSION[] = "1.2.0";
+const char FW_DATE[]    = "2026-11-14 19:31 GMT";
 
 // ==========================================================================
 // USER SETTINGS -- change these
@@ -160,6 +164,10 @@ const bool PIEZO_DURING_ALARM      = true;   // piezo warbles alongside the rela
 const bool     PIEZO_IS_PASSIVE = true;      // false for an active (self-oscillating) buzzer
 const uint16_t PIEZO_FREQ_HZ    = 2700;      // passive piezos are loudest near resonance
 const uint16_t PIEZO_FREQ_LOW   = 1800;      // second tone for the alarm warble / error beep
+const uint16_t KEY_CLICK_FREQ_HZ = 3500;     // key click tone, distinct from the other sounds
+const uint16_t KEY_CLICK_GAP_MS  = 15;       // silence before the click so it stands out over
+                                             // a beep/warble (and is audible on an active buzzer)
+const uint16_t KEY_CLICK_MS      = 50;       // click tone length
 
 const uint8_t RELAY_ON_LEVEL = HIGH;         // spec: relay HIGH = alarm sounder on
 
@@ -261,22 +269,32 @@ bool bufferEndsWithCode() {
 }
 
 // ==========================================================================
-// PIEZO (non-blocking): priority = feedback pattern > key click > state pattern
+// PIEZO (non-blocking): priority = key click > feedback pattern > state pattern
+// Every key press gives a click in every state; feedback beeps start after it.
 // ==========================================================================
 struct Feedback {
   uint8_t  remaining = 0;   // beeps left
   uint16_t onMs = 0, offMs = 0, freq = 0;
+  uint32_t startAt = 0;    // pattern waits until this time (after a key click)
   uint32_t stepAt = 0;
   bool     on = false;
 } fb;
 
-uint32_t clickUntil = 0;
+uint32_t clickStart = 0;
+bool     clickActive = false;
 bool     piezoIsOn = false;
 uint16_t piezoFreq = 0;
 
 void startFeedback(uint8_t count, uint16_t onMs, uint16_t offMs, uint16_t freq) {
   fb.remaining = count; fb.onMs = onMs; fb.offMs = offMs; fb.freq = freq;
-  fb.stepAt = millis(); fb.on = true;
+  uint32_t start = millis();
+  if (clickActive) start = clickStart + KEY_CLICK_GAP_MS + KEY_CLICK_MS + 30;   // let the click finish
+  fb.startAt = start; fb.stepAt = start; fb.on = true;
+}
+
+void startClick(uint32_t now) {
+  clickStart = now;
+  clickActive = true;
 }
 void beepOK()    { startFeedback(2, 80, 80, PIEZO_FREQ_HZ); }
 void beepError() { startFeedback(1, 600, 0, PIEZO_FREQ_LOW); }
@@ -285,6 +303,7 @@ void beepDisarm(){ startFeedback(3, 60, 60, PIEZO_FREQ_HZ); }
 // Returns true and sets freq if the feedback pattern wants sound now.
 bool feedbackSound(uint32_t now, uint16_t& freq) {
   if (fb.remaining == 0) return false;
+  if ((int32_t)(now - fb.startAt) < 0) return false;   // still waiting for the click
   uint32_t dur = fb.on ? fb.onMs : fb.offMs;
   if (now - fb.stepAt >= dur) {
     fb.stepAt = now;
@@ -320,11 +339,18 @@ void updatePiezo(uint32_t now) {
   bool on = false;
   uint32_t elapsed = now - stateEnteredAt;
 
-  if (feedbackSound(now, freq)) {
+  if (clickActive && (now - clickStart) >= (uint32_t)(KEY_CLICK_GAP_MS + KEY_CLICK_MS)) {
+    clickActive = false;
+  }
+  uint16_t fbFreq = PIEZO_FREQ_HZ;
+  bool fbOn = feedbackSound(now, fbFreq);   // always called so its timing keeps running
+
+  if (clickActive) {
+    on = (now - clickStart) >= KEY_CLICK_GAP_MS;   // brief gap, then the click tone
+    freq = KEY_CLICK_FREQ_HZ;
+  } else if (fbOn) {
     on = true;
-  } else if ((int32_t)(clickUntil - now) > 0) {
-    on = true;
-    freq = PIEZO_FREQ_HZ;
+    freq = fbFreq;
   } else {
     switch (state) {
       case EXIT_DELAY:
@@ -384,7 +410,7 @@ bool pirMotion(uint32_t now){ return pirReady(now) && pir.high(); }
 // KEY HANDLING
 // ==========================================================================
 void handleKey(char k, uint32_t now) {
-  clickUntil = now + 40;     // key click
+  startClick(now);          // audible click for every key, in every state
   lastKeyAt = now;
 
   if (state == DISARMED) {
