@@ -4,8 +4,8 @@
   ==========================================================================
   Author  : Gordon (GitHub: Gordy404)
   Repo    : https://github.com/Gordy404/ESP32_alarm
-  Version : 1.3.0
-  Date    : 2026-11-14 20:05 GMT (UK)
+  Version : 1.4.0
+  Date    : 2026-11-14 20:28 GMT (UK)
 
   Change log
     1.0.0  2026-11-13 00:57 GMT  First release: state machine, keypad code
@@ -21,6 +21,10 @@
                                  directly (core 2.x and 3.x) instead of tone(),
                                  boot sound self-test (re-run with 't' on
                                  serial), DEBUG_KEYS / DEBUG_PIEZO serial logs.
+    1.4.0  2026-11-14 20:28 GMT  One piezo frequency for everything
+                                 (PIEZO_FREQ_HZ, default 2000 Hz), serial
+                                 's' = resonance sweep 1-5 kHz, 'f<Hz>' = try
+                                 a frequency live. PWM duty confirmed 50 %.
   ==========================================================================
   Board  : "DOIT ESP32 DEVKIT V1" (or "ESP32 Dev Module") in Arduino IDE
   Library: "Keypad" by Mark Stanley / Alexander Brevig (Library Manager)
@@ -144,8 +148,8 @@
 // FIRMWARE INFO -- bump FW_VERSION and FW_DATE on every change
 // ==========================================================================
 const char FW_AUTHOR[]  = "Gordon (GitHub: Gordy404)";
-const char FW_VERSION[] = "1.3.0";
-const char FW_DATE[]    = "2026-11-14 20:05 GMT";
+const char FW_VERSION[] = "1.4.0";
+const char FW_DATE[]    = "2026-11-14 20:28 GMT";
 
 // ==========================================================================
 // USER SETTINGS -- change these
@@ -166,9 +170,11 @@ const bool REARM_AFTER_ALARM       = true;   // false: go to DISARMED after the 
 const bool PIEZO_DURING_ALARM      = true;   // piezo warbles alongside the relay siren
 
 const bool     PIEZO_IS_PASSIVE = true;      // false for an active (self-oscillating) buzzer
-const uint16_t PIEZO_FREQ_HZ    = 2700;      // passive piezos are loudest near resonance
-const uint16_t PIEZO_FREQ_LOW   = 1800;      // second tone for the alarm warble / error beep
-const uint16_t KEY_CLICK_FREQ_HZ = 3500;     // key click tone, distinct from the other sounds
+// THE piezo frequency: key clicks, beeps and the alarm all use it. A passive
+// disc is many times louder at its resonance, so find yours with the serial
+// 's' sweep, try it with 'f<Hz>' (e.g. f2400), then put the loudest value here.
+const uint16_t PIEZO_FREQ_HZ    = 2000;
+// The error beep and the alarm warble's second tone are derived from it (x 3/4).
 const uint16_t KEY_CLICK_GAP_MS  = 15;       // silence before the click so it stands out over
                                              // a beep/warble (and is audible on an active buzzer)
 const uint16_t KEY_CLICK_MS      = 50;       // click tone length
@@ -279,6 +285,7 @@ bool bufferEndsWithCode() {
 
 // ==========================================================================
 // PIEZO (non-blocking): priority = key click > feedback pattern > state pattern
+// toneHz starts at PIEZO_FREQ_HZ and can be changed live with 'f<Hz>' on serial (RAM only).
 // Every key press gives a click in every state; feedback beeps start after it.
 // ==========================================================================
 struct Feedback {
@@ -288,6 +295,9 @@ struct Feedback {
   uint32_t stepAt = 0;
   bool     on = false;
 } fb;
+
+uint16_t toneHz = PIEZO_FREQ_HZ;
+uint16_t toneLowHz() { return (uint16_t)(toneHz * 3UL / 4); }
 
 uint32_t clickStart = 0;
 bool     clickActive = false;
@@ -305,9 +315,9 @@ void startClick(uint32_t now) {
   clickStart = now;
   clickActive = true;
 }
-void beepOK()    { startFeedback(2, 80, 80, PIEZO_FREQ_HZ); }
-void beepError() { startFeedback(1, 600, 0, PIEZO_FREQ_LOW); }
-void beepDisarm(){ startFeedback(3, 60, 60, PIEZO_FREQ_HZ); }
+void beepOK()    { startFeedback(2, 80, 80, toneHz); }
+void beepError() { startFeedback(1, 600, 0, toneLowHz()); }
+void beepDisarm(){ startFeedback(3, 60, 60, toneHz); }
 
 // Returns true and sets freq if the feedback pattern wants sound now.
 bool feedbackSound(uint32_t now, uint16_t& freq) {
@@ -335,7 +345,9 @@ bool feedbackSound(uint32_t now, uint16_t& freq) {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 void piezoHwAttach()           { ledcAttach(PIN_PIEZO, PIEZO_FREQ_HZ, 10); ledcWrite(PIN_PIEZO, 0); }
 void piezoHwDetach()           { ledcDetach(PIN_PIEZO); }
-void piezoHwTone(uint16_t f)   { ledcWriteTone(PIN_PIEZO, f); }   // 50 % square wave, 0 = off
+// ledcWriteTone() sets a 50 % duty square wave (duty 512 of 1024 at 10-bit) on both
+// core 2.x and 3.x - the loudest drive for a piezo. 0 Hz = output held LOW.
+void piezoHwTone(uint16_t f)   { ledcWriteTone(PIN_PIEZO, f); }
 #else
 const uint8_t PIEZO_LEDC_CH = 0;
 void piezoHwAttach()           { ledcSetup(PIEZO_LEDC_CH, PIEZO_FREQ_HZ, 10); ledcAttachPin(PIN_PIEZO, PIEZO_LEDC_CH); ledcWrite(PIEZO_LEDC_CH, 0); }
@@ -364,9 +376,9 @@ void setPiezo(bool on, uint16_t freq) {
 // Blocking sound self-test: used only at boot (before the alarm runs) or on
 // request while DISARMED. Tells you which kind of sounder you have.
 void soundSelfTest() {
-  Serial.println("Sound test 1/2: 2.7 kHz square wave for 1 s (a PASSIVE piezo should sound)");
+  Serial.printf("Sound test 1/2: %u Hz square wave for 1 s (a PASSIVE piezo should sound)\n", toneHz);
   if (!PIEZO_IS_PASSIVE) piezoHwAttach();
-  piezoHwTone(PIEZO_FREQ_HZ);
+  piezoHwTone(toneHz);
   delay(1000);
   piezoHwTone(0);
   piezoHwDetach();
@@ -390,19 +402,19 @@ bool pattern(uint32_t elapsed, uint16_t onMs, uint16_t periodMs) {
 }
 
 void updatePiezo(uint32_t now) {
-  uint16_t freq = PIEZO_FREQ_HZ;
+  uint16_t freq = toneHz;
   bool on = false;
   uint32_t elapsed = now - stateEnteredAt;
 
   if (clickActive && (now - clickStart) >= (uint32_t)(KEY_CLICK_GAP_MS + KEY_CLICK_MS)) {
     clickActive = false;
   }
-  uint16_t fbFreq = PIEZO_FREQ_HZ;
+  uint16_t fbFreq = toneHz;
   bool fbOn = feedbackSound(now, fbFreq);   // always called so its timing keeps running
 
   if (clickActive) {
     on = (now - clickStart) >= KEY_CLICK_GAP_MS;   // brief gap, then the click tone
-    freq = KEY_CLICK_FREQ_HZ;
+    freq = toneHz;
   } else if (fbOn) {
     on = true;
     freq = fbFreq;
@@ -419,7 +431,7 @@ void updatePiezo(uint32_t now) {
       case ALARM:
         if (PIEZO_DURING_ALARM) {
           on = true;
-          freq = ((elapsed / 250) & 1) ? PIEZO_FREQ_LOW : PIEZO_FREQ_HZ;   // warble
+          freq = ((elapsed / 250) & 1) ? toneLowHz() : toneHz;   // warble
         }
         break;
       default:
@@ -468,7 +480,7 @@ void handleKey(char k, uint32_t now) {
   startClick(now);          // audible click for every key, in every state
   if (DEBUG_KEYS) {
     Serial.printf("[%10lu] key '%c'  state=%s  click started (%u Hz, %u ms)\n",
-                  (unsigned long)now, k, STATE_NAMES[state], KEY_CLICK_FREQ_HZ, KEY_CLICK_MS);
+                  (unsigned long)now, k, STATE_NAMES[state], toneHz, KEY_CLICK_MS);
   }
   lastKeyAt = now;
 
@@ -682,19 +694,67 @@ void setup() {
                 PIEZO_IS_PASSIVE ? "PASSIVE (square wave)" : "ACTIVE (steady HIGH)",
                 ESP_ARDUINO_VERSION_MAJOR);
   if (BOOT_SOUND_TEST) soundSelfTest();
+  Serial.println("Serial commands (while DISARMED): t = sound test, s = sweep, f<Hz> = try a frequency");
   setupNetwork();
   stateEnteredAt = millis();
   beepOK();
 }
 
-// Serial commands: 't' = sound test (only while DISARMED, it blocks ~2.5 s).
+// Blocking frequency sweep to find the disc's resonance (DISARMED only).
+void resonanceSweep() {
+  Serial.println("Sweep: 1000-5000 Hz, 250 Hz steps, 0.5 s each. Note the LOUDEST value.");
+  if (!PIEZO_IS_PASSIVE) piezoHwAttach();
+  for (uint16_t f = 1000; f <= 5000; f += 250) {
+    Serial.printf("  %u Hz\n", f);
+    piezoHwTone(f);
+    delay(500);
+    piezoHwTone(0);
+    delay(150);
+  }
+  if (!PIEZO_IS_PASSIVE) piezoBegin();
+  piezoIsOn = false;
+  Serial.println("Sweep done. Try a value with e.g. 'f2400', then set PIEZO_FREQ_HZ to it.");
+}
+
+void runCommand(const char* cmd) {
+  if (cmd[0] == '\0') return;
+  if (state != DISARMED) { Serial.println("Serial commands only work while DISARMED"); return; }
+  switch (cmd[0]) {
+    case 't': case 'T': soundSelfTest(); break;
+    case 's': case 'S': resonanceSweep(); break;
+    case 'f': case 'F': {
+      long f = atol(cmd + 1);
+      if (f >= 200 && f <= 10000) {
+        toneHz = (uint16_t)f;
+        Serial.printf("Piezo frequency now %u Hz (until reboot). Playing it for 1 s.\n", toneHz);
+        piezoIsOn = false;
+        startFeedback(1, 1000, 0, toneHz);
+      } else {
+        Serial.printf("Current frequency %u Hz. Use f200..f10000, e.g. f2400\n", toneHz);
+      }
+      break;
+    }
+    default:
+      Serial.println("Commands: t = sound test, s = frequency sweep, f<Hz> = set frequency (e.g. f2400)");
+  }
+}
+
+// Serial commands, ended by Enter or by a 300 ms pause (works with "No line ending" too).
 void handleSerial() {
+  static char line[12];
+  static uint8_t len = 0;
+  static uint32_t lastCharAt = 0;
   while (Serial.available()) {
     char c = Serial.read();
-    if (c == 't' || c == 'T') {
-      if (state == DISARMED) soundSelfTest();
-      else Serial.println("Sound test only allowed while DISARMED");
+    if (c == '\n' || c == '\r') {
+      line[len] = '\0'; runCommand(line); len = 0;
+    } else if (len < sizeof(line) - 1) {
+      line[len++] = c;
     }
+    lastCharAt = millis();
+  }
+  if (len && millis() - lastCharAt >= 300) {
+    line[len] = '\0'; runCommand(line); len = 0;
   }
 }
 

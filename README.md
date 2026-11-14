@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Author** | Gordon ([Gordy404](https://github.com/Gordy404)) |
-| **Version** | 1.3.0 |
-| **Date** | 2026-11-14 20:05 GMT (UK) |
+| **Version** | 1.4.0 |
+| **Date** | 2026-11-14 20:28 GMT (UK) |
 
 The version is also in `FW_VERSION` / `FW_DATE` at the top of the sketch and is printed on the serial monitor at boot.
 
@@ -30,7 +30,7 @@ Burglar alarm firmware for the ESP32 DevKit V1 (Arduino IDE), with a 3x4 membran
 
 Because the code ends in `*`, `*` can't be a clear key. When disarmed, `#` is "enter". When armed, the code is matched as soon as it is typed, and `#` clears the buffer. Half-typed codes clear after 10 s.
 
-Every key press clicks the piezo in every state (`KEY_CLICK_FREQ_HZ`, 3.5 kHz for 50 ms after a 15 ms gap), so it stays audible over the exit and entry beeps and the alarm warble. Confirm and error beeps play after the click.
+Every key press clicks the piezo in every state (`PIEZO_FREQ_HZ` for 50 ms after a 15 ms gap), so it stays audible over the exit and entry beeps and the alarm warble. Confirm and error beeps play after the click.
 
 ## OTA updates
 
@@ -47,11 +47,32 @@ Safety rules built in:
 - WiFi never blocks the alarm. If the network is down, the alarm works normally and retries WiFi every 30 s.
 - ArduinoOTA uses a password challenge but no encryption, so keep it to a trusted home network.
 
+## Piezo too quiet? Find its resonance
+
+A passive piezo disc is many times louder at its resonant frequency than anywhere else, so the sketch uses **one frequency for everything**: `PIEZO_FREQ_HZ` (default 2000 Hz). The error beep and the alarm warble's second tone are derived from it (x 3/4). The PWM is a 50 % duty square wave, which is the loudest drive for a piezo.
+
+Serial commands, while disarmed, at 115200 baud (any line-ending setting works):
+
+| Command | What it does |
+|---|---|
+| `s` | Sweeps 1000 to 5000 Hz in 250 Hz steps, 0.5 s each, printing each frequency. Note the loudest. |
+| `f2400` | Plays 2400 Hz for 1 s and uses it for all sounds until reboot. Fine-tune around the sweep's peak. |
+| `t` | The sound test below. |
+
+Then set `PIEZO_FREQ_HZ` to the loudest value and re-flash.
+
+**Louder hardware options**, from easiest:
+
+1. **Remove the series resistor** (or drop it to about 47 Ω). A piezo is a capacitor, so the GPIO only drives brief charging current. It's fine directly on the pin.
+2. **5 V NPN driver.** GPIO22 to 1 kΩ to the base of a 2N2222/BC337, emitter to GND, piezo between 5 V and the collector, with a 1 kΩ resistor across the piezo so it discharges. That gives a 5 V swing instead of 3.3 V, about 3.6 dB louder.
+3. **Push-pull on two GPIOs.** Drive the disc between two pins in antiphase for a 6.6 V swing, about 6 dB louder. This needs a firmware change: ask for it if you want it.
+4. **A proper sounder.** A piezo disc with a resonant cavity (a housed "transducer"), or an active 5 V buzzer through the NPN, is much louder than a bare disc.
+
 ## No sound? Troubleshooting
 
 At power-up the sketch runs a 2.5 s sound test (`BOOT_SOUND_TEST`), and you can repeat it by typing `t` in the serial monitor while disarmed:
 
-1. **Test 1:** a 2.7 kHz square wave for 1 s. A **passive** piezo should sound.
+1. **Test 1:** a `PIEZO_FREQ_HZ` square wave for 1 s. A **passive** piezo should sound.
 2. **Test 2:** a steady 3.3 V for 1 s. An **active** buzzer should sound.
 
 If you only hear test 2, set `PIEZO_IS_PASSIVE = false`. If you hear neither, it's the hardware:
@@ -124,7 +145,8 @@ GPIO23 --[1k]--+-- Base           Relay coil (+) -- 5V (VIN)
 | `REARM_AFTER_ALARM` | true | false goes to DISARMED after the alarm |
 | `PIEZO_DURING_ALARM` | true | Piezo warbles with the siren |
 | `PIR_WARMUP_MS` | 30 s | PIR ignored after power-up |
-| `KEY_CLICK_FREQ_HZ` / `KEY_CLICK_MS` / `KEY_CLICK_GAP_MS` | 3500 Hz / 50 ms / 15 ms | Key click tone, length and the silence before it |
+| `PIEZO_FREQ_HZ` | 2000 Hz | The one frequency for clicks, beeps and the alarm |
+| `KEY_CLICK_MS` / `KEY_CLICK_GAP_MS` | 50 ms / 15 ms | Key click length and the silence before it |
 | `DEBUG_KEYS` / `DEBUG_PIEZO` | true / true | Temporary serial logging of keys and piezo changes |
 | `BOOT_SOUND_TEST` | true | Sound test at power-up, re-run with `t` |
 | `OTA_HOSTNAME` | `esp32-alarm` | Network name shown in Arduino IDE |
@@ -139,3 +161,4 @@ GPIO23 --[1k]--+-- Base           Relay coil (+) -- 5V (VIN)
 | 1.1.0 | 2026-11-14 18:33 GMT | WiFi and password-protected ArduinoOTA updates, only while DISARMED; credentials in git-ignored `secrets.h` |
 | 1.2.0 | 2026-11-14 19:31 GMT | Audible click on every key press in every state, overriding exit/entry beeps and the alarm warble; confirm/error beeps wait for the click |
 | 1.3.0 | 2026-11-14 20:05 GMT | Piezo driven by LEDC directly for core 2.x and 3.x (no `tone()`), boot sound self-test, `DEBUG_KEYS` / `DEBUG_PIEZO` serial logs |
+| 1.4.0 | 2026-11-14 20:28 GMT | One piezo frequency `PIEZO_FREQ_HZ` (default 2000 Hz) for all sounds; serial `s` resonance sweep and `f<Hz>` live frequency; 50 % duty confirmed |
