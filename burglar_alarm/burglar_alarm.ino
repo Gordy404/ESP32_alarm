@@ -4,8 +4,8 @@
   ==========================================================================
   Author  : Gordon (GitHub: Gordy404)
   Repo    : https://github.com/Gordy404/ESP32_alarm
-  Version : 1.2.0
-  Date    : 2026-11-14 19:31 GMT (UK)
+  Version : 1.3.0
+  Date    : 2026-11-14 20:05 GMT (UK)
 
   Change log
     1.0.0  2026-11-13 00:57 GMT  First release: state machine, keypad code
@@ -17,6 +17,10 @@
                                  state: click now overrides exit/entry beeps
                                  and the alarm warble (short gap + distinct
                                  tone), and confirm/error beeps wait for it.
+    1.3.0  2026-11-14 20:05 GMT  Sound troubleshooting: piezo driven by LEDC
+                                 directly (core 2.x and 3.x) instead of tone(),
+                                 boot sound self-test (re-run with 't' on
+                                 serial), DEBUG_KEYS / DEBUG_PIEZO serial logs.
   ==========================================================================
   Board  : "DOIT ESP32 DEVKIT V1" (or "ESP32 Dev Module") in Arduino IDE
   Library: "Keypad" by Mark Stanley / Alexander Brevig (Library Manager)
@@ -140,8 +144,8 @@
 // FIRMWARE INFO -- bump FW_VERSION and FW_DATE on every change
 // ==========================================================================
 const char FW_AUTHOR[]  = "Gordon (GitHub: Gordy404)";
-const char FW_VERSION[] = "1.2.0";
-const char FW_DATE[]    = "2026-11-14 19:31 GMT";
+const char FW_VERSION[] = "1.3.0";
+const char FW_DATE[]    = "2026-11-14 20:05 GMT";
 
 // ==========================================================================
 // USER SETTINGS -- change these
@@ -168,6 +172,11 @@ const uint16_t KEY_CLICK_FREQ_HZ = 3500;     // key click tone, distinct from th
 const uint16_t KEY_CLICK_GAP_MS  = 15;       // silence before the click so it stands out over
                                              // a beep/warble (and is audible on an active buzzer)
 const uint16_t KEY_CLICK_MS      = 50;       // click tone length
+
+// --- Temporary debugging (turn off when everything works) ---
+const bool DEBUG_KEYS  = true;   // print every key press, the state and the click. NOTE: shows the code!
+const bool DEBUG_PIEZO = true;   // print every piezo on/off change (busy during exit delay / alarm)
+const bool BOOT_SOUND_TEST = true; // ~2 s sound test at power-up; type 't' in the serial monitor to repeat
 
 const uint8_t RELAY_ON_LEVEL = HIGH;         // spec: relay HIGH = alarm sounder on
 
@@ -318,15 +327,61 @@ bool feedbackSound(uint32_t now, uint16_t& freq) {
   return fb.on;
 }
 
+// Low-level piezo drive. The LEDC API changed between core 2.x (channels)
+// and 3.x (pins), so drive it directly for each instead of relying on tone().
+#ifndef ESP_ARDUINO_VERSION_MAJOR
+  #define ESP_ARDUINO_VERSION_MAJOR 2
+#endif
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+void piezoHwAttach()           { ledcAttach(PIN_PIEZO, PIEZO_FREQ_HZ, 10); ledcWrite(PIN_PIEZO, 0); }
+void piezoHwDetach()           { ledcDetach(PIN_PIEZO); }
+void piezoHwTone(uint16_t f)   { ledcWriteTone(PIN_PIEZO, f); }   // 50 % square wave, 0 = off
+#else
+const uint8_t PIEZO_LEDC_CH = 0;
+void piezoHwAttach()           { ledcSetup(PIEZO_LEDC_CH, PIEZO_FREQ_HZ, 10); ledcAttachPin(PIN_PIEZO, PIEZO_LEDC_CH); ledcWrite(PIEZO_LEDC_CH, 0); }
+void piezoHwDetach()           { ledcDetachPin(PIN_PIEZO); }
+void piezoHwTone(uint16_t f)   { ledcWriteTone(PIEZO_LEDC_CH, f); }
+#endif
+
+void piezoBegin() {
+  pinMode(PIN_PIEZO, OUTPUT);
+  digitalWrite(PIN_PIEZO, LOW);
+  if (PIEZO_IS_PASSIVE) piezoHwAttach();
+}
+
 void setPiezo(bool on, uint16_t freq) {
   if (on == piezoIsOn && (!on || freq == piezoFreq)) return;   // avoid re-configuring every loop
   if (PIEZO_IS_PASSIVE) {
-    if (on) tone(PIN_PIEZO, freq); else noTone(PIN_PIEZO);
+    piezoHwTone(on ? freq : 0);
   } else {
     digitalWrite(PIN_PIEZO, on ? HIGH : LOW);
   }
+  if (DEBUG_PIEZO) Serial.printf("[%10lu] piezo %s %u Hz\n", (unsigned long)millis(), on ? "ON " : "off", on ? freq : 0);
   piezoIsOn = on;
   piezoFreq = freq;
+}
+
+// Blocking sound self-test: used only at boot (before the alarm runs) or on
+// request while DISARMED. Tells you which kind of sounder you have.
+void soundSelfTest() {
+  Serial.println("Sound test 1/2: 2.7 kHz square wave for 1 s (a PASSIVE piezo should sound)");
+  if (!PIEZO_IS_PASSIVE) piezoHwAttach();
+  piezoHwTone(PIEZO_FREQ_HZ);
+  delay(1000);
+  piezoHwTone(0);
+  piezoHwDetach();
+  delay(300);
+
+  Serial.println("Sound test 2/2: steady 3.3 V for 1 s (an ACTIVE buzzer should sound)");
+  pinMode(PIN_PIEZO, OUTPUT);
+  digitalWrite(PIN_PIEZO, HIGH);
+  delay(1000);
+  digitalWrite(PIN_PIEZO, LOW);
+
+  piezoBegin();                      // back to the configured mode
+  piezoIsOn = false;
+  Serial.println("Sound test done. Heard only test 2? Set PIEZO_IS_PASSIVE = false.");
+  Serial.println("Heard nothing? Check wiring - see the hardware checklist in the README.");
 }
 
 // Simple on/off pattern helper based on time since the state started.
@@ -411,6 +466,10 @@ bool pirMotion(uint32_t now){ return pirReady(now) && pir.high(); }
 // ==========================================================================
 void handleKey(char k, uint32_t now) {
   startClick(now);          // audible click for every key, in every state
+  if (DEBUG_KEYS) {
+    Serial.printf("[%10lu] key '%c'  state=%s  click started (%u Hz, %u ms)\n",
+                  (unsigned long)now, k, STATE_NAMES[state], KEY_CLICK_FREQ_HZ, KEY_CLICK_MS);
+  }
   lastKeyAt = now;
 
   if (state == DISARMED) {
@@ -606,6 +665,8 @@ void setup() {
   Serial.begin(115200);
   delay(50);   // one-off at boot only, lets the serial monitor attach
 
+  piezoBegin();
+
   reed.begin(INPUT_PULLUP);
   pir.begin(INPUT);          // PIR drives the line; add INPUT_PULLDOWN if yours floats when idle
   keypad.setDebounceTime(20);
@@ -617,8 +678,24 @@ void setup() {
   Serial.printf("Author: %s\n", FW_AUTHOR);
   Serial.println("Ready - DISARMED");
   Serial.printf("PIR warm-up: %lu s\n", (unsigned long)(PIR_WARMUP_MS / 1000));
+  Serial.printf("Piezo: GPIO%u, %s, core %d.x LEDC\n", PIN_PIEZO,
+                PIEZO_IS_PASSIVE ? "PASSIVE (square wave)" : "ACTIVE (steady HIGH)",
+                ESP_ARDUINO_VERSION_MAJOR);
+  if (BOOT_SOUND_TEST) soundSelfTest();
   setupNetwork();
+  stateEnteredAt = millis();
   beepOK();
+}
+
+// Serial commands: 't' = sound test (only while DISARMED, it blocks ~2.5 s).
+void handleSerial() {
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == 't' || c == 'T') {
+      if (state == DISARMED) soundSelfTest();
+      else Serial.println("Sound test only allowed while DISARMED");
+    }
+  }
 }
 
 void loop() {
@@ -634,6 +711,7 @@ void loop() {
 
   updateStateMachine(now);
   updateNetwork(now);
+  handleSerial();
   // Fresh timestamp: a transition above may have set stateEnteredAt after 'now'.
   uint32_t outNow = millis();
   updatePiezo(outNow);

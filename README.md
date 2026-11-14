@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Author** | Gordon ([Gordy404](https://github.com/Gordy404)) |
-| **Version** | 1.2.0 |
-| **Date** | 2026-11-14 19:31 GMT (UK) |
+| **Version** | 1.3.0 |
+| **Date** | 2026-11-14 20:05 GMT (UK) |
 
 The version is also in `FW_VERSION` / `FW_DATE` at the top of the sketch and is printed on the serial monitor at boot.
 
@@ -46,6 +46,28 @@ Safety rules built in:
 - An upload pauses the main loop, so the relay and piezo are forced off for its duration. After a successful update the board reboots into DISARMED. A failed or interrupted upload leaves the old firmware running.
 - WiFi never blocks the alarm. If the network is down, the alarm works normally and retries WiFi every 30 s.
 - ArduinoOTA uses a password challenge but no encryption, so keep it to a trusted home network.
+
+## No sound? Troubleshooting
+
+At power-up the sketch runs a 2.5 s sound test (`BOOT_SOUND_TEST`), and you can repeat it by typing `t` in the serial monitor while disarmed:
+
+1. **Test 1:** a 2.7 kHz square wave for 1 s. A **passive** piezo should sound.
+2. **Test 2:** a steady 3.3 V for 1 s. An **active** buzzer should sound.
+
+If you only hear test 2, set `PIEZO_IS_PASSIVE = false`. If you hear neither, it's the hardware:
+
+- [ ] The piezo is on **GPIO22**, labelled D22 on the DevKit V1 (not the 22nd header pin).
+- [ ] The other leg goes to **GND** (not 3V3), on the same ground as the ESP32.
+- [ ] The series resistor is about **100 Ω**. A 1 kΩ to 10 kΩ resistor makes a passive disc almost silent.
+- [ ] A bare passive disc is quiet at 3.3 V. Hold it near your ear, or drive it through an NPN for more volume.
+- [ ] Check continuity from the D22 pin to the piezo with a multimeter. Breadboard rows and jumpers fail often.
+- [ ] Swap in an LED with a 330 Ω resistor in place of the piezo: it should glow during test 1 and light fully during test 2.
+- [ ] Polarity matters for active buzzers (+ to GPIO). Passive discs don't care.
+
+Debug logging (turn it off when everything works):
+
+- `DEBUG_KEYS` prints every key, the state and that a click started. **This shows the code on serial.**
+- `DEBUG_PIEZO` prints each piezo on/off change and its frequency, which proves the firmware is driving the pin.
 
 ## Pin map
 
@@ -103,6 +125,8 @@ GPIO23 --[1k]--+-- Base           Relay coil (+) -- 5V (VIN)
 | `PIEZO_DURING_ALARM` | true | Piezo warbles with the siren |
 | `PIR_WARMUP_MS` | 30 s | PIR ignored after power-up |
 | `KEY_CLICK_FREQ_HZ` / `KEY_CLICK_MS` / `KEY_CLICK_GAP_MS` | 3500 Hz / 50 ms / 15 ms | Key click tone, length and the silence before it |
+| `DEBUG_KEYS` / `DEBUG_PIEZO` | true / true | Temporary serial logging of keys and piezo changes |
+| `BOOT_SOUND_TEST` | true | Sound test at power-up, re-run with `t` |
 | `OTA_HOSTNAME` | `esp32-alarm` | Network name shown in Arduino IDE |
 | `OTA_ONLY_WHEN_DISARMED` | true | false allows updates while armed, which silences the siren during the upload |
 | `WIFI_RETRY_MS` | 30 s | WiFi reconnect interval |
@@ -114,3 +138,4 @@ GPIO23 --[1k]--+-- Base           Relay coil (+) -- 5V (VIN)
 | 1.0.0 | 2026-11-13 00:57 GMT | First release: state machine, keypad code entry, exit/entry delays, 10 min relay alarm |
 | 1.1.0 | 2026-11-14 18:33 GMT | WiFi and password-protected ArduinoOTA updates, only while DISARMED; credentials in git-ignored `secrets.h` |
 | 1.2.0 | 2026-11-14 19:31 GMT | Audible click on every key press in every state, overriding exit/entry beeps and the alarm warble; confirm/error beeps wait for the click |
+| 1.3.0 | 2026-11-14 20:05 GMT | Piezo driven by LEDC directly for core 2.x and 3.x (no `tone()`), boot sound self-test, `DEBUG_KEYS` / `DEBUG_PIEZO` serial logs |
